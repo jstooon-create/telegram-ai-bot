@@ -1,8 +1,10 @@
 import base64
 import json
 import os
+import threading
 from io import BytesIO
 from anthropic import Anthropic
+from flask import Flask
 import openpyxl
 from telegram import Update
 from telegram.ext import (
@@ -12,54 +14,142 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-# 1. 환경 변수 읽기 (로컬 테스트 시 콤마 뒤의 실제 키/토큰 값을 사용)
-ANTHROPIC_API_KEY = os.environ.get(
-    "ANTHROPIC_API_KEY", ""
-)
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN", ""
-)
-# API 키 및 토큰 유효성 검사
-if not ANTHROPIC_API_KEY or not TELEGRAM_BOT_TOKEN:
-    print("⚠️ 경고: ANTHROPIC_API_KEY 또는 TELEGRAM_BOT_TOKEN이 설정되지 않았습니다.")
+# -------------------------------------------------------------
+# 🌐 Render 무료 Web Service 포트 에러(No open ports) 방지용 웹 서버
+# -------------------------------------------------------------
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "Telegram AI Bot is running 24/7!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host="0.0.0.0", port=port)
+
+# 백그라운드 스레드로 가짜 웹 서버 실행 (Render 포트 검사 통과용)
+threading.Thread(target=run_flask, daemon=True).start()
+# -------------------------------------------------------------
+
+# 1. 환경 변수 읽기
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "")
+
+# 2. Google Drive API 클라이언트 초기화
+drive_service = None
+if GOOGLE_CREDENTIALS_JSON:
+    try:
+        creds_info = json.loads(GOOGLE_CREDENTIALS_JSON)
+        scopes = ["https://www.googleapis.com/auth/drive.file"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        drive_service = build("drive", "v3", credentials=creds)
+        print("📁 Google Drive API 연결 성공!")
+    except Exception as e:
+        print(f"⚠️ Google Drive 연결 실패: {e}")
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MODEL_NAME = "claude-3-5-sonnet-20241022"
 
-HISTORY_FILE = "chat_history.json"
 
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[히스토리 로드 오류]: {e}")
-            return {}
-    return {}
-
-
-def save_history(history_data):
+def get_or_create_drive_file_id(filename="chat_history.json"):
+    """구글 드라이브에서 특정 파일의 ID를 찾거나 없으면 생성"""
+    if not drive_service:
+        return None
     try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history_data, f, ensure_ascii=False, indent=2)
+        query = f"name = '{filename}' and trashed = false"
+        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get("files", [])
+        if files:
+            return files[0]["id"]
     except Exception as e:
-        print(f"[히스토리 저장 오류]: {e}")
+        print(f"[Drive Search Error]: {e}")
+    return None
+
+
+def load_history(user_id: str):
+    """구글 드라이브에서 대화 기록 불러오기"""
+    if drive_service:
+        file_id = get_or_create_drive_file_id()
+        if file_id:
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                fh = BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                fh.seek(0)
+                content = fh.read().decode("utf-8")
+                all_data = json.loads(content)
+                return all_data.get(user_id, [])
+            except Exception as e:
+                print(f"[Drive Load Error]: {e}")
+
+    # Fallback: 로컬 파일
+    if os.path.exists("chat_history.json"):
+        try:
+            with open("chat_history.json", "r", encoding="utf-8") as f:
+                return json.load(f).get(user_id, [])
+        except Exception:
+            return []
+    return []
+
+
+def save_history(user_id: str, user_history: list):
+    """구글 드라이브에 대화 기록 저장하기"""
+    all_data = {}
+    
+    if drive_service:
+        file_id = get_or_create_drive_file_id()
+        if file_id:
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                fh = BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                fh.seek(0)
+                all_data = json.loads(fh.read().decode("utf-8"))
+            except Exception:
+                all_data = {}
+
+    all_data[user_id] = user_history[-30:]  # 최근 30개 대화 유지
+    json_bytes = json.dumps(all_data, ensure_ascii=False, indent=2).encode("utf-8")
+
+    if drive_service:
+        file_id = get_or_create_drive_file_id()
+        media = MediaIoBaseUpload(BytesIO(json_bytes), mimetype="application/json", resumable=True)
+        try:
+            if file_id:
+                drive_service.files().update(fileId=file_id, media_body=media).execute()
+            else:
+                file_metadata = {"name": "chat_history.json", "mimeType": "application/json"}
+                drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+            return
+        except Exception as e:
+            print(f"[Drive Save Error]: {e}")
+
+    try:
+        with open("chat_history.json", "w", encoding="utf-8") as f:
+            f.write(json_bytes.decode("utf-8"))
+    except Exception as e:
+        print(f"[Local Save Error]: {e}")
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """대화 기록 초기화 명령어 (/reset)"""
     user_id = str(update.effective_user.id)
-    history_data = load_history()
-
-    if user_id in history_data:
-        del history_data[user_id]
-        save_history(history_data)
+    save_history(user_id, [])
 
     print(f"\n[시스템]: 사용자({user_id}) 대화 기억 초기화 완료.")
     await update.message.reply_text(
-        "🧹 대화 기억이 깨끗하게 초기화되었습니다! 새롭게 대화를 시작해 주세요."
+        "🧹 제이스님과의 대화 기억이 구글 드라이브에서 깨끗하게 초기화되었습니다!"
     )
 
 
@@ -68,9 +158,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     print(f"\n[사용자 텍스트 요청]: {user_text}")
 
-    history_data = load_history()
-    user_history = history_data.get(user_id, [])
-
+    user_history = load_history(user_id)
     user_history.append({"role": "user", "content": user_text})
     recent_messages = user_history[-20:]
 
@@ -78,15 +166,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = client.messages.create(
             model=MODEL_NAME,
             max_tokens=2048,
-            system="당신은 유능하고 정중한 개인 업무용 AI 비서입니다. 명확하고 깔끔하게 답변해 주세요.",
+            system=(
+                "당신은 유능하고 정중한 개인 업무용 AI 비서입니다. "
+                "사용자의 이름은 '제이스'입니다. 제이스님과의 이전 업무 맥락과 대화 기록을 잘 기억하여 명확하게 답변해 주세요."
+            ),
             messages=recent_messages,
         )
 
         ai_reply = response.content[0].text
-
         user_history.append({"role": "assistant", "content": ai_reply})
-        history_data[user_id] = user_history
-        save_history(history_data)
+        save_history(user_id, user_history)
 
     except Exception as e:
         error_msg = str(e)
@@ -193,8 +282,13 @@ async def handle_photo_or_document(
             except Exception as json_err:
                 print(f"[엑셀 변환 중 경고]: {json_err}")
 
+        user_history = load_history(user_id)
+        user_history.append({"role": "user", "content": f"[사진/문서 분석 요청]: {caption}"})
+        user_history.append({"role": "assistant", "content": ai_reply})
+        save_history(user_id, user_history)
+
         await status_msg.edit_text(ai_reply)
-        print("[이미지/문서 분석 완료]")
+        print("[이미지/문서 분석 및 구글 드라이브 기록 완료]")
 
     except Exception as e:
         error_msg = str(e)
@@ -203,7 +297,7 @@ async def handle_photo_or_document(
 
 
 if __name__ == "__main__":
-    print("🤖 [클라우드 서버 가동] Claude 3.5 Sonnet 텔레그램 봇이 활성화되었습니다.")
+    print("🤖 [구글 드라이브 동기화 연동] Claude 3.5 Sonnet 가동 중...")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("reset", reset_command))
