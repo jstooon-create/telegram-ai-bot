@@ -52,7 +52,7 @@ if GOOGLE_CREDENTIALS_JSON:
         print(f"⚠️ Google Drive 연결 실패: {e}")
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
-MODEL_NAME = "claude-3-5-sonnet-latest"
+MODEL_NAME = "claude-3-5-sonnet-20241022"
 
 
 def get_or_create_drive_file_id(filename="chat_history.json"):
