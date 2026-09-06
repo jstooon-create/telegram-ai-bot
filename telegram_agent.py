@@ -50,6 +50,13 @@ if GOOGLE_CREDENTIALS_JSON:
         print("📁 Google Drive API 연결 성공!")
     except Exception as e:
         print(f"⚠️ Google Drive 연결 실패: {e}")
+        print("=" * 40)
+        print("=== ANTHROPIC API ERROR DETAILS ===")
+        print(f"Error Type: {type(e)}")
+        print(f"Error Message: {e}")
+        print("=" * 40)
+        # 기존 답장 처리 문구
+
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MODEL_NAME = "claude-3-5-sonnet-20240620"
