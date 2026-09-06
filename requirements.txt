@@ -1,3 +1,5 @@
 anthropic
 python-telegram-bot
 openpyxl
+google-api-python-client
+google-auth
