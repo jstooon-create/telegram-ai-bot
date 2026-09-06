@@ -13,13 +13,17 @@ from telegram.ext import (
     filters,
 )
 
-# 1. Anthropic (Claude) API 키
-ANTHROPIC_API_KEY = ""
+# 1. 환경 변수 읽기 (로컬 테스트 시 콤마 뒤의 실제 키/토큰 값을 사용)
+ANTHROPIC_API_KEY = os.environ.get(
+    "ANTHROPIC_API_KEY", ""
+)
+TELEGRAM_BOT_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN", ""
+)
+# API 키 및 토큰 유효성 검사
+if not ANTHROPIC_API_KEY or not TELEGRAM_BOT_TOKEN:
+    print("⚠️ 경고: ANTHROPIC_API_KEY 또는 TELEGRAM_BOT_TOKEN이 설정되지 않았습니다.")
 
-# 2. 텔레그램 토큰 (숫자:문자열...)
-TELEGRAM_BOT_TOKEN = ""
-
-# Anthropic 클라이언트 및 모델 초기화
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MODEL_NAME = "claude-3-5-sonnet-20241022"
 
@@ -31,18 +35,21 @@ def load_history():
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            print(f"[히스토리 로드 오류]: {e}")
             return {}
     return {}
 
 
 def save_history(history_data):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history_data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[히스토리 저장 오류]: {e}")
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reset 명령어로 대화 기억 및 세션 초기화"""
     user_id = str(update.effective_user.id)
     history_data = load_history()
 
@@ -57,7 +64,6 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """일반 텍스트 메시지 처리"""
     user_id = str(update.effective_user.id)
     user_text = update.message.text
     print(f"\n[사용자 텍스트 요청]: {user_text}")
@@ -94,18 +100,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo_or_document(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
-    """사진, 이미지 스캔본, PDF 문서 처리 및 엑셀 추출"""
     user_id = str(update.effective_user.id)
     caption = update.message.caption or "이 사진 또는 문서의 글자와 내용을 읽고 자세히 정리해 주세요."
     print(f"\n[사용자 파일 전송]: {caption}")
 
-    # 안내 메시지 전송
     status_msg = await update.message.reply_text(
         "🔍 문서/이미지를 시각적으로 분석하고 있습니다. 잠시만 기다려 주세요..."
     )
 
     try:
-        # 텔레그램 서버에서 이미지 파일 다운로드
         if update.message.photo:
             file_obj = await update.message.photo[-1].get_file()
             mime_type = "image/jpeg"
@@ -119,7 +122,6 @@ async def handle_photo_or_document(
         file_bytes = await file_obj.download_as_bytearray()
         base64_image = base64.b64encode(file_bytes).decode("utf-8")
 
-        # Claude 3.5 Sonnet Vision 메시지 구성
         messages = [
             {
                 "role": "user",
@@ -164,7 +166,6 @@ async def handle_photo_or_document(
 
         ai_reply = response.content[0].text
 
-        # 엑셀 생성을 위한 JSON 표 데이터 감지 및 파싱
         if "```json" in ai_reply and '"table_data"' in ai_reply:
             try:
                 json_str = ai_reply.split("```json")[1].split("```")[0].strip()
@@ -173,7 +174,6 @@ async def handle_photo_or_document(
                 if "table_data" in parsed_data:
                     table_rows = parsed_data["table_data"]
 
-                    # openpyxl을 이용해 메모리 상에서 엑셀 생성
                     wb = openpyxl.Workbook()
                     ws = wb.active
                     ws.title = "추출된_데이터"
@@ -185,7 +185,6 @@ async def handle_photo_or_document(
                     wb.save(excel_stream)
                     excel_stream.seek(0)
 
-                    # 텔레그램으로 엑셀 파일 전송
                     await update.message.reply_document(
                         document=excel_stream,
                         filename="extracted_data.xlsx",
@@ -194,7 +193,6 @@ async def handle_photo_or_document(
             except Exception as json_err:
                 print(f"[엑셀 변환 중 경고]: {json_err}")
 
-        # 분석 텍스트 결과 답장
         await status_msg.edit_text(ai_reply)
         print("[이미지/문서 분석 완료]")
 
@@ -205,7 +203,7 @@ async def handle_photo_or_document(
 
 
 if __name__ == "__main__":
-    print("🤖 [이미지/문서/엑셀 지원] Claude 3.5 Sonnet 가동 중...")
+    print("🤖 [클라우드 서버 가동] Claude 3.5 Sonnet 텔레그램 봇이 활성화되었습니다.")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("reset", reset_command))
@@ -213,7 +211,6 @@ if __name__ == "__main__":
         MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     )
 
-    # 사진 및 문서 파일 수신 핸들러 추가
     app.add_handler(
         MessageHandler(filters.PHOTO | filters.Document.ALL, handle_photo_or_document)
     )
