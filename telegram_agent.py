@@ -59,7 +59,7 @@ if GOOGLE_CREDENTIALS_JSON:
 
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
-MODEL_NAME = "claude-3-5-sonnet-20240620"
+MODEL_NAME = "claude-3-5-sonnet-20241022"
 
 
 def get_or_create_drive_file_id(filename="chat_history.json"):
