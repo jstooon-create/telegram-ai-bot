@@ -19,19 +19,18 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # -------------------------------------------------------------
-# 🌐 Render 무료 Web Service 포트 에러(No open ports) 방지용 웹 서버
+# 🌐 Render 무료 Web Service 포트 에러(404 / No open ports) 완벽 방지용 웹 서버
 # -------------------------------------------------------------
 app_flask = Flask(__name__)
 
-@app_flask.route("/")
+@app_flask.route('/')
 def home():
-    return "Telegram AI Bot is running 24/7!"
+    return "Telegram AI Bot is Running 24/7!", 200
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     app_flask.run(host="0.0.0.0", port=port)
 
-# 백그라운드 스레드로 가짜 웹 서버 실행 (Render 포트 검사 통과용)
 threading.Thread(target=run_flask, daemon=True).start()
 # -------------------------------------------------------------
 
