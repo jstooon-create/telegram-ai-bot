@@ -59,8 +59,7 @@ if GOOGLE_CREDENTIALS_JSON:
 
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
-MODEL_NAME = "claude-3-haiku-20240307"
-
+MODEL_NAME = "claude-3-5-sonnet-20241022"
 
 def get_or_create_drive_file_id(filename="chat_history.json"):
     """구글 드라이브에서 특정 파일의 ID를 찾거나 없으면 생성"""
