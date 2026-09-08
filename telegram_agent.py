@@ -37,26 +37,19 @@ threading.Thread(target=run_flask, daemon=True).start()
 # 1. 환경 변수 읽기
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "") or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
 # 2. Google Drive API 클라이언트 초기화
 drive_service = None
 if GOOGLE_CREDENTIALS_JSON:
     try:
         creds_info = json.loads(GOOGLE_CREDENTIALS_JSON)
-        scopes = ["https://www.googleapis.com/auth/drive.file"]
+        scopes = ["https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         drive_service = build("drive", "v3", credentials=creds)
         print("📁 Google Drive API 연결 성공!")
     except Exception as e:
         print(f"⚠️ Google Drive 연결 실패: {e}")
-        print("=" * 40)
-        print("=== ANTHROPIC API ERROR DETAILS ===")
-        print(f"Error Type: {type(e)}")
-        print(f"Error Message: {e}")
-        print("=" * 40)
-        # 기존 답장 처리 문구
-
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MODEL_NAME = "claude-sonnet-4-5-20250929"
@@ -71,9 +64,16 @@ def get_or_create_drive_file_id(filename="chat_history.json"):
         files = results.get("files", [])
         if files:
             return files[0]["id"]
+        
+        # 파일이 없을 경우 초기 빈 json 파일 생성
+        file_metadata = {"name": filename, "mimeType": "application/json"}
+        empty_json = json.dumps({}, ensure_ascii=False).encode("utf-8")
+        media = MediaIoBaseUpload(BytesIO(empty_json), mimetype="application/json")
+        created_file = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        return created_file.get("id")
     except Exception as e:
-        print(f"[Drive Search Error]: {e}")
-    return None
+        print(f"[Drive Search/Create Error]: {e}")
+        return None
 
 
 def load_history(user_id: str):
@@ -90,7 +90,7 @@ def load_history(user_id: str):
                     _, done = downloader.next_chunk()
                 fh.seek(0)
                 content = fh.read().decode("utf-8")
-                all_data = json.loads(content)
+                all_data = json.loads(content) if content else {}
                 return all_data.get(user_id, [])
             except Exception as e:
                 print(f"[Drive Load Error]: {e}")
@@ -120,7 +120,8 @@ def save_history(user_id: str, user_history: list):
                 while not done:
                     _, done = downloader.next_chunk()
                 fh.seek(0)
-                all_data = json.loads(fh.read().decode("utf-8"))
+                content = fh.read().decode("utf-8")
+                all_data = json.loads(content) if content else {}
             except Exception:
                 all_data = {}
 
@@ -133,9 +134,6 @@ def save_history(user_id: str, user_history: list):
         try:
             if file_id:
                 drive_service.files().update(fileId=file_id, media_body=media).execute()
-            else:
-                file_metadata = {"name": "chat_history.json", "mimeType": "application/json"}
-                drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
             return
         except Exception as e:
             print(f"[Drive Save Error]: {e}")
@@ -302,7 +300,7 @@ async def handle_photo_or_document(
 
 
 if __name__ == "__main__":
-    print("🤖 [구글 드라이브 동기화 연동] Claude 3.5 Sonnet 가동 중...")
+    print("🤖 [구글 드라이브 동기화 연동] Claude Sonnet 가동 중...")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("reset", reset_command))
