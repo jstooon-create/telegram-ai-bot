@@ -17,6 +17,7 @@ from telegram.ext import (
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from duckduckgo_search import DDGS
 
 # -------------------------------------------------------------
 # 🌐 Render 무료 Web Service 포트 에러(404 / No open ports) 완벽 방지용 웹 서버
@@ -54,6 +55,24 @@ if GOOGLE_CREDENTIALS_JSON:
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MODEL_NAME = "claude-sonnet-4-5-20250929"
 
+
+def web_search(query: str, max_results: int = 4) -> str:
+    """DuckDuckGo를 활용한 100% 무료 실시간 웹 검색 함수"""
+    try:
+        results = []
+        with DDGS() as ddgs:
+            search_results = list(ddgs.text(query, max_results=max_results))
+            for i, r in enumerate(search_results, 1):
+                results.append(f"[{i}] 제목: {r.get('title', '')}\n요약: {r.get('body', '')}\n링크: {r.get('href', '')}\n")
+        
+        if not results:
+            return "검색 결과가 없습니다."
+        return "\n".join(results)
+    except Exception as e:
+        print(f"[Web Search Error]: {e}")
+        return f"웹 검색 중 오류가 발생했습니다: {e}"
+
+
 def get_or_create_drive_file_id(filename="chat_history.json"):
     """구글 드라이브에서 특정 파일의 ID를 찾거나 없으면 생성"""
     if not drive_service:
@@ -65,7 +84,6 @@ def get_or_create_drive_file_id(filename="chat_history.json"):
         if files:
             return files[0]["id"]
         
-        # 파일이 없을 경우 초기 빈 json 파일 생성
         file_metadata = {"name": filename, "mimeType": "application/json"}
         empty_json = json.dumps({}, ensure_ascii=False).encode("utf-8")
         media = MediaIoBaseUpload(BytesIO(empty_json), mimetype="application/json")
@@ -95,7 +113,6 @@ def load_history(user_id: str):
             except Exception as e:
                 print(f"[Drive Load Error]: {e}")
 
-    # Fallback: 로컬 파일
     if os.path.exists("chat_history.json"):
         try:
             with open("chat_history.json", "r", encoding="utf-8") as f:
@@ -125,7 +142,7 @@ def save_history(user_id: str, user_history: list):
             except Exception:
                 all_data = {}
 
-    all_data[user_id] = user_history[-30:]  # 최근 30개 대화 유지
+    all_data[user_id] = user_history[-30:]
     json_bytes = json.dumps(all_data, ensure_ascii=False, indent=2).encode("utf-8")
 
     if drive_service:
@@ -161,8 +178,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     print(f"\n[사용자 텍스트 요청]: {user_text}")
 
+    # 웹 검색 키워드 감지
+    search_keywords = ["검색", "뉴스", "최신", "오늘", "날씨", "주가", "이슈"]
+    need_search = any(kw in user_text for kw in search_keywords)
+
+    search_context = ""
+    if need_search:
+        status_msg = await update.message.reply_text("🌐 최신 정보 조회를 위해 실시간 웹 검색 중입니다...")
+        search_result = web_search(user_text)
+        search_context = f"\n\n[실시간 웹 검색 결과 참고 자료]:\n{search_result}"
+
     user_history = load_history(user_id)
-    user_history.append({"role": "user", "content": user_text})
+    prompt_text = user_text + search_context
+    user_history.append({"role": "user", "content": prompt_text})
     recent_messages = user_history[-20:]
 
     try:
@@ -171,12 +199,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=2048,
             system=(
                 "당신은 유능하고 정중한 개인 업무용 AI 비서입니다. "
-                "사용자의 이름은 '제이스'입니다. 제이스님과의 이전 업무 맥락과 대화 기록을 잘 기억하여 명확하게 답변해 주세요."
+                "사용자의 이름은 '제이스'입니다. 제이스님과의 이전 업무 맥락과 대화 기록을 잘 기억하여 명확하게 답변해 주세요. "
+                "실시간 웹 검색 결과가 포함된 경우 해당 최신 자료를 참고하여 정확하게 요약 답변해 주세요."
             ),
             messages=recent_messages,
         )
 
         ai_reply = response.content[0].text
+        
+        # 프롬프트에는 검색 결과를 포함하되 대화 기록 저장은 원본 사용자 메시지만 깔끔하게 유지
+        user_history[-1] = {"role": "user", "content": user_text}
         user_history.append({"role": "assistant", "content": ai_reply})
         save_history(user_id, user_history)
 
@@ -300,7 +332,7 @@ async def handle_photo_or_document(
 
 
 if __name__ == "__main__":
-    print("🤖 [구글 드라이브 동기화 연동] Claude Sonnet 가동 중...")
+    print("🤖 [구글 드라이브 + 웹 검색 연동] Claude Sonnet 가동 중...")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("reset", reset_command))
