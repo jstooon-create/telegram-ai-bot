@@ -1,7 +1,9 @@
-python-telegram-bot>=20.0
-anthropic>=0.39.0
+flask
+anthropic
+python-telegram-bot
 google-api-python-client
+google-auth
 google-auth-httplib2
 google-auth-oauthlib
-flask
 openpyxl
+duckduckgo_search
